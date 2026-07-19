@@ -44,7 +44,11 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer shutdown(ctx)
+	defer func() {
+		if err := shutdown(ctx); err != nil {
+			slog.Error("omnilogslog: shutdown", "error", err)
+		}
+	}()
 
 	logger := slog.New(handler)
 	logger.Info("hello from go", "env", "prod")
@@ -57,11 +61,25 @@ func main() {
 ```
 
 `OMNILOG_URL` is the base API Gateway invoke URL (no `/v1/logs` suffix —
-`NewHandler` appends it), matching the convention used elsewhere in
-omnilog's docs and the demo feed script.
+`NewHandler` appends it, tolerating a trailing slash), matching the
+convention used elsewhere in omnilog's docs and the demo feed script. It
+must be `https://` — `NewHandler` rejects an `http://` URL up front, since
+the API key is sent as a plain header. Pass `omnilogslog.WithAllowInsecureHTTP()`
+to point at a local collector during development.
 
-Records are batched; call the `shutdown` func (typically via `defer`) before
-the process exits so the last batch flushes.
+Records are batched and exported asynchronously; call the `shutdown` func
+(typically via `defer`) before the process exits so the last batch flushes.
+Export is fire-and-forget: if every batch fails (a bad API key, the network
+being down) the application isn't notified beyond stderr noise, other than
+whatever error `shutdown` returns for the final flush. Pass
+`omnilogslog.WithErrorHandler(func(error) { ... })` to observe earlier
+failures too — note this installs a process-wide OpenTelemetry error
+handler, so it also catches errors from any other OTel component in the
+same process.
+
+By default every level, including `slog.LevelDebug`, is exported. Pass
+`omnilogslog.WithMinLevel(slog.LevelInfo)` (or any other threshold) to drop
+lower-severity records before they're batched.
 
 ## Why a separate repo
 
