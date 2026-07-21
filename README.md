@@ -16,7 +16,7 @@ bespoke to omnilog's wire format lives here.
 ## Install
 
 ```bash
-go get github.com/pjgrenyer/omnilog-slog
+go get github.com/pjgrenyer/omnilog-slog@v0.1.0
 ```
 
 ## Usage
