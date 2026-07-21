@@ -208,6 +208,88 @@ func TestNewHandler_DefaultServiceName(t *testing.T) {
 	}
 }
 
+func TestNewHandler_ResourceAttributes(t *testing.T) {
+	srv, reqCh, _ := testServer(t, http.StatusOK)
+	defer srv.Close()
+
+	ctx := context.Background()
+	handler, shutdown, err := omnilogslog.NewHandler(ctx, srv.URL, "test-api-key",
+		omnilogslog.WithServiceName("my-service"),
+		omnilogslog.WithResourceAttributes(map[string]string{
+			"env":    "prod",
+			"region": "eu-west-2",
+		}),
+		omnilogslog.WithAllowInsecureHTTP(),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	slog.New(handler).Info("hello")
+
+	shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := shutdown(shutdownCtx); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+
+	req := <-reqCh
+	var exportReq collogpb.ExportLogsServiceRequest
+	if err := proto.Unmarshal(req.body, &exportReq); err != nil {
+		t.Fatalf("unmarshal ExportLogsServiceRequest: %v", err)
+	}
+
+	got := map[string]string{}
+	for _, attr := range exportReq.ResourceLogs[0].Resource.Attributes {
+		got[attr.Key] = attr.Value.GetStringValue()
+	}
+	want := map[string]string{"service.name": "my-service", "env": "prod", "region": "eu-west-2"}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("resource attribute %q = %q, want %q (all: %+v)", k, got[k], v, got)
+		}
+	}
+}
+
+func TestNewHandler_ResourceAttributesServiceNameKeyOverridesWithServiceName(t *testing.T) {
+	srv, reqCh, _ := testServer(t, http.StatusOK)
+	defer srv.Close()
+
+	ctx := context.Background()
+	handler, shutdown, err := omnilogslog.NewHandler(ctx, srv.URL, "test-api-key",
+		omnilogslog.WithServiceName("from-with-service-name"),
+		omnilogslog.WithResourceAttributes(map[string]string{"service.name": "from-resource-attrs"}),
+		omnilogslog.WithAllowInsecureHTTP(),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	slog.New(handler).Info("hello")
+
+	shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := shutdown(shutdownCtx); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+
+	req := <-reqCh
+	var exportReq collogpb.ExportLogsServiceRequest
+	if err := proto.Unmarshal(req.body, &exportReq); err != nil {
+		t.Fatalf("unmarshal ExportLogsServiceRequest: %v", err)
+	}
+
+	var got string
+	for _, attr := range exportReq.ResourceLogs[0].Resource.Attributes {
+		if attr.Key == "service.name" {
+			got = attr.Value.GetStringValue()
+		}
+	}
+	if want := "from-resource-attrs"; got != want {
+		t.Errorf("service.name = %q, want %q (WithResourceAttributes should win)", got, want)
+	}
+}
+
 func TestNewHandler_TrailingSlashBaseURL(t *testing.T) {
 	srv, reqCh, _ := testServer(t, http.StatusOK)
 	defer srv.Close()

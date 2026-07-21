@@ -14,6 +14,7 @@ import (
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -30,6 +31,7 @@ const scopeName = "github.com/pjgrenyer/omnilog-slog"
 
 type config struct {
 	serviceName   string
+	resourceAttrs map[string]string
 	minLevel      slog.Level
 	errorHandler  func(error)
 	allowInsecure bool
@@ -43,6 +45,22 @@ type Option func(*config)
 // "unknown-service" if not set.
 func WithServiceName(name string) Option {
 	return func(c *config) { c.serviceName = name }
+}
+
+// WithResourceAttributes sets additional OTel Resource attributes beyond
+// service.name — e.g. env, availability_zone, region — attached to every log
+// row sent through the handler, the same host/process-wide way a real OTel
+// Collector's resource processor would, or the way Datadog's host tags work.
+// omnilog surfaces these as its queryable "tags" (see the ?tag=k:v Read API
+// filter), alongside whatever record-scoped attributes each slog call itself
+// carries via its key/value pairs.
+//
+// If attrs contains a "service.name" key, it overrides WithServiceName —
+// matching the underlying OTel resource construction's own last-write-wins
+// behavior on a duplicate key, rather than silently dropping one or the
+// other.
+func WithResourceAttributes(attrs map[string]string) Option {
+	return func(c *config) { c.resourceAttrs = attrs }
 }
 
 // WithMinLevel sets the minimum slog.Level exported to omnilog; records
@@ -106,7 +124,15 @@ func NewHandler(ctx context.Context, baseURL, apiKey string, opts ...Option) (ha
 		return nil, nil, fmt.Errorf("omnilogslog: %w", err)
 	}
 
-	res, err := resource.Merge(resource.Default(), resource.NewSchemaless(semconv.ServiceName(cfg.serviceName)))
+	// service.name first so a "service.name" key in cfg.resourceAttrs
+	// overrides it (NewSchemaless keeps the last value on a duplicate key) —
+	// see WithResourceAttributes.
+	kvs := make([]attribute.KeyValue, 0, len(cfg.resourceAttrs)+1)
+	kvs = append(kvs, semconv.ServiceName(cfg.serviceName))
+	for k, v := range cfg.resourceAttrs {
+		kvs = append(kvs, attribute.String(k, v))
+	}
+	res, err := resource.Merge(resource.Default(), resource.NewSchemaless(kvs...))
 	if err != nil {
 		return nil, nil, fmt.Errorf("omnilogslog: build resource: %w", err)
 	}
